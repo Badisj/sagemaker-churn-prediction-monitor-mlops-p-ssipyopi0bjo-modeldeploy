@@ -5,6 +5,7 @@ import os
 
 import boto3
 from botocore.exceptions import ClientError
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 sm_client = boto3.client("sagemaker")
@@ -57,6 +58,32 @@ def get_approved_package(model_package_group_name):
         error_message = e.response["Error"]["Message"]
         logger.error(error_message)
         raise Exception(error_message)
+
+
+def get_previous_model_name(project_name, endpoint_name):
+    try:
+        endpoint = sm_client.describe_endpoint(EndpointName=endpoint_name)
+        endpoint_config_name = endpoint["EndpointConfigName"]
+
+        endpoint_config = sm_client.describe_endpoint_config(
+            EndpointConfigName=endpoint_config_name
+        )
+
+        return endpoint_config["ProductionVariants"][0]["ModelName"]
+
+    except ClientError as e:
+        error_code = e.response["Error"]["Code"]
+
+        # Endpoint does not exist (first deployment)
+        if error_code in ["ValidationException", "ResourceNotFound"]:
+            logger.info(
+                f"No existing endpoint found for {endpoint_name}. "
+                "This is expected for first deployment."
+            )
+            return ""
+
+        # Any other error is real and should fail the build
+        raise
 
 
 def extend_config(args, model_package_arn, stage_config):

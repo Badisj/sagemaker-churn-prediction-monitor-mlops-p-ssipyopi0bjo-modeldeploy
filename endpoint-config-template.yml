@@ -2,6 +2,7 @@ Description:
   This template is built and deployed by the infrastructure pipeline in various stages (staging/production) as required.
   It specifies the resources that need to be created, like the SageMaker Endpoint. It can be extended to include resources like
   AutoScalingPolicy, API Gateway, etc,. as required.
+  
 Parameters:
   SageMakerProjectName:
     Type: String
