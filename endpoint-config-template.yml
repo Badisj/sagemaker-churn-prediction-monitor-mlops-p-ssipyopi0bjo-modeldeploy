@@ -21,6 +21,32 @@ Parameters:
     Description:
       The name for a project pipeline stage, such as Staging or Prod, for
       which resources are provisioned and deployed.
+  DeploymentStrategy:
+    Type: String
+    Description: The deployment strategy to be adopted.
+    AllowedValues:
+      - first
+      - bluegreen
+      - canary
+      - ab
+      - shadow
+  CandidateModelWeight:
+    Type: Number
+    Default: 1.0
+    MinValue: 0
+    MaxValue: 1
+  PreviousModelWeight:
+    Type: Number
+    Default: 1.0
+    MinValue: 0
+    MaxValue: 1
+  PreviousModelName:
+    Type: String
+    Default: ""
+    Description: Existing model name (required for canary / ab / shadow)
+  CandidateModelName:
+    Type: String
+    Description: The candidate model name.
   EndpointInstanceCount:
     Type: Number
     Description: Number of instances to launch for the endpoint.
@@ -28,6 +54,9 @@ Parameters:
   EndpointInstanceType:
     Type: String
     Description: The ML compute instance type for the endpoint.
+  EndpointName:
+    Type: String
+    Description: The endpoint name.
   DataCaptureUploadPath:
     Type: String
     Description: The s3 path to which the captured data is uploaded.
@@ -42,37 +71,130 @@ Parameters:
     Type: String
     AllowedValues: [true, false]   
 
+Conditions:
+  IsFirst: !Equals [!Ref DeploymentStrategy, first]
+  IsBlueGreen: !Equals [!Ref DeploymentStrategy, bluegreen]
+  IsCanary: !Equals [!Ref DeploymentStrategy, canary]
+  IsAB: !Equals [!Ref DeploymentStrategy, ab]
+  IsShadow: !Equals [!Ref DeploymentStrategy, shadow]
+  HasPreviousModel: !Not [!Equals [!Ref PreviousModelName, ""]]
 
 Resources:
-  Model:
+  
+  ### Candidate model
+  CandidateModel:
     Type: AWS::SageMaker::Model
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
+      ModelName: !Ref CandidateModelName
+      ExecutionRoleArn: !Ref ModelExecutionRoleArn
       Containers:
          - ModelPackageName: !Ref ModelPackageName
-      ExecutionRoleArn: !Ref ModelExecutionRoleArn
 
+  # EndpointConfig:
+  #   Type: AWS::SageMaker::EndpointConfig
+  #   Properties:
+  #     ProductionVariants:
+  #       - InitialInstanceCount: !Ref EndpointInstanceCount
+  #         InitialVariantWeight: 1.0
+  #         InstanceType: !Ref EndpointInstanceType
+  #         ModelName: !GetAtt Model.ModelName
+  #         VariantName: AllTraffic
+  #     DataCaptureConfig:
+  #         EnableCapture: !Ref EnableDataCapture 
+  #         InitialSamplingPercentage: !Ref SamplingPercentage
+  #         DestinationS3Uri: !Ref DataCaptureUploadPath
+  #         CaptureOptions:
+  #           - CaptureMode: Input
+  #           - CaptureMode: Output
+  #         CaptureContentTypeHeader:
+  #           CsvContentTypes:
+  #             - "text/csv"
+
+  ### Endpoint configuration
   EndpointConfig:
     Type: AWS::SageMaker::EndpointConfig
     Properties:
-      ProductionVariants:
-        - InitialInstanceCount: !Ref EndpointInstanceCount
-          InitialVariantWeight: 1.0
-          InstanceType: !Ref EndpointInstanceType
-          ModelName: !GetAtt Model.ModelName
-          VariantName: AllTraffic
-      DataCaptureConfig:
-          EnableCapture: !Ref EnableDataCapture 
-          InitialSamplingPercentage: !Ref SamplingPercentage
-          DestinationS3Uri: !Ref DataCaptureUploadPath
-          CaptureOptions:
-            - CaptureMode: Input
-            - CaptureMode: Output
-          CaptureContentTypeHeader:
-            CsvContentTypes:
-              - "text/csv"
+      EndpointConfigName: !Ref EndpointConfigName
 
+      ProductionVariants:
+        # -------- FIRST / BLUE-GREEN --------
+        - !If
+          - IsShadow
+          - VariantName: Live
+            ModelName: !Ref PreviousModelName
+            InitialInstanceCount: !Ref EndpointInstanceCount
+            InstanceType: !Ref EndpointInstanceType
+            InitialVariantWeight: !Ref CandidateModelWeight
+          - !If
+            - IsFirst
+            - VariantName: AllTraffic
+              ModelName: !GetAtt CandidateModel.ModelName
+              InitialInstanceCount: !Ref EndpointInstanceCount
+              InstanceType: !Ref EndpointInstanceType
+              InitialVariantWeight: !Ref CandidateModelWeight
+            - !If
+              - IsBlueGreen
+              - VariantName: Green
+                ModelName: !GetAtt CandidateModel.ModelName
+                InitialInstanceCount: !Ref EndpointInstanceCount
+                InstanceType: !Ref EndpointInstanceType
+                InitialVariantWeight: !Ref CandidateModelWeight
+              - !If
+                - IsCanary
+                - VariantName: CanaryOld
+                  ModelName: !Ref PreviousModelName
+                  InitialInstanceCount: !Ref EndpointInstanceCount
+                  InstanceType: !Ref EndpointInstanceType
+                  InitialVariantWeight: !Ref PreviousModelWeight
+                - !If
+                  - IsAB
+                  - VariantName: VariantA
+                    ModelName: !Ref PreviousModelName
+                    InitialInstanceCount: !Ref EndpointInstanceCount
+                    InstanceType: !Ref EndpointInstanceType
+                    InitialVariantWeight: !Ref PreviousModelWeight
+                  - !Ref AWS::NoValue
+
+        # -------- CANARY / AB NEW MODEL --------
+        - !If
+          - IsCanary
+          - VariantName: CanaryNew
+            ModelName: !GetAtt CandidateModel.ModelName
+            InitialInstanceCount: !Ref EndpointInstanceCount
+            InstanceType: !Ref EndpointInstanceType
+            InitialVariantWeight: !Ref CandidateModelWeight
+          - !If
+            - IsAB
+            - VariantName: VariantB
+              ModelName: !GetAtt CandidateModel.ModelName
+              InitialInstanceCount: !Ref EndpointInstanceCount
+              InstanceType: !Ref EndpointInstanceType
+              InitialVariantWeight: !Ref CandidateModelWeight
+            - !Ref AWS::NoValue
+
+      # -------- SHADOW --------
+      ShadowProductionVariants: !If
+          - IsShadow
+          - 
+            - VariantName: Shadow
+              ModelName: !GetAtt CandidateModel.ModelName
+              InitialInstanceCount: !Ref EndpointInstanceCount
+              InstanceType: !Ref EndpointInstanceType
+          - !Ref AWS::NoValue
+
+      DataCaptureConfig:
+        EnableCapture: !Ref EnableDataCapture
+        InitialSamplingPercentage: !Ref SamplingPercentage
+        DestinationS3Uri: !Ref DataCaptureUploadPath
+        CaptureOptions:
+          - CaptureMode: Input
+          - CaptureMode: Output
+
+  # Endpoint
   Endpoint:
     Type: AWS::SageMaker::Endpoint
     Properties:
-      EndpointName: !Sub ${SageMakerProjectName}-${StageName}
+      EndpointName: !Ref EndpointName
       EndpointConfigName: !GetAtt EndpointConfig.EndpointConfigName

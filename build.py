@@ -91,22 +91,63 @@ def extend_config(args, model_package_arn, stage_config):
     Extend the stage configuration with additional parameters and tags based.
     """
     # Verify that config has parameters and tags sections
-    if not "Parameters" in stage_config or not "StageName" in stage_config["Parameters"]:
+    if "Parameters" not in stage_config or "StageName" not in stage_config["Parameters"]:
         raise Exception("Configuration file must include SageName parameter")
-    if not "Tags" in stage_config:
+    if "Tags" not in stage_config:
         stage_config["Tags"] = {}
+
+    # Set model, endpoint configuration and endpoint names
+    stage_name = stage_config['Parameters']['StageName']
+    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+
+    candidate_model_name = f"Model-{args.sagemaker_project_name}-{stage_name}-{args.deployment_strategy}{timestamp}"
+    endpoint_config_name = f"EndpointConfig-{args.sagemaker_project_name}-{stage_name}-{timestamp}"
+    endpoint_name = f"Endpoint-{args.sagemaker_project_name}-{stage_name}"
+
+    # Get previous deployed model if exists
+    previous_prod_model_name = get_previous_model_name(args.sagemaker_project_name, endpoint_name)
+    if args.deployment_strategy not in ["first"] and not previous_prod_model_name:
+        raise Exception(
+            f"{args.deployment_strategy} requires an existing endpoint"
+            f"Stage = {stage_config['Parameters']['StageName']}: No endpoint found."
+        )
+
     # Create new params and tags
     new_params = {
+        # General parameters
         "SageMakerProjectName": args.sagemaker_project_name,
+        "DataCaptureUploadPath": "s3://" + args.s3_bucket + '/datacapture-' + stage_config["Parameters"]["StageName"],
+
+        # Candidate model identifiers
         "ModelPackageName": model_package_arn,
         "ModelExecutionRoleArn": args.model_execution_role,
-        "DataCaptureUploadPath": "s3://" + args.s3_bucket + '/datacapture-' + stage_config["Parameters"]["StageName"],
+
+        # Previous and candidate model names
+        "PreviousModelName": previous_prod_model_name,
+        "CandidateModelName": candidate_model_name,
+
+        # Endpoint metadata parameters
+        "EndpointConfigName": endpoint_config_name,
+        "EndpointName": endpoint_name,
+
+        # Deployment strategy parameter
+        "DeploymentStrategy": args.deployment_strategy,
     }
+
+    # Add variant weights to parameters
+    if args.deployment_strategy in ["canary", "ab"]:
+        new_params["CandidateModelWeight"] = str(args.candidate_weight)
+        new_params["PreviousModelWeight"] = str(1.0 - args.candidate_weight)
+    else:
+        new_params["CandidateModelWeight"] = str(args.candidate_weight)
+
     new_tags = {
         "sagemaker:deployment-stage": stage_config["Parameters"]["StageName"],
         "sagemaker:project-id": args.sagemaker_project_id,
         "sagemaker:project-name": args.sagemaker_project_name,
+        "sagemaker:deployment-strategy": args.deployment_strategy
     }
+
     # Add tags from Project
     get_pipeline_custom_tags(args, sm_client, new_tags)
 
@@ -114,6 +155,7 @@ def extend_config(args, model_package_arn, stage_config):
         "Parameters": {**stage_config["Parameters"], **new_params},
         "Tags": {**stage_config.get("Tags", {}), **new_tags},
     }
+
 
 def get_pipeline_custom_tags(args, sm_client, new_tags):
     try:
@@ -129,6 +171,7 @@ def get_pipeline_custom_tags(args, sm_client, new_tags):
     except:
         logger.error("Error getting project tags")
     return new_tags
+
 
 def get_cfn_style_config(stage_config):
     parameters = []
@@ -147,6 +190,7 @@ def get_cfn_style_config(stage_config):
         tags.append(tag)
     return parameters, tags
 
+
 def create_cfn_params_tags_file(config, export_params_file, export_tags_file):
     # Write Params and tags in separate file for Cfn cli command
     parameters, tags = get_cfn_style_config(config)
@@ -154,6 +198,7 @@ def create_cfn_params_tags_file(config, export_params_file, export_tags_file):
         json.dump(parameters, f, indent=4)
     with open(export_tags_file, "w") as f:
         json.dump(tags, f, indent=4)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -163,6 +208,8 @@ if __name__ == "__main__":
     parser.add_argument("--sagemaker-project-id", type=str, required=True)
     parser.add_argument("--sagemaker-project-name", type=str, required=True)
     parser.add_argument("--s3-bucket", type=str, required=True)
+    parser.add_argument("--deployment-strategy", type=str, default="single", choices=["first", "ab", "canary", "bluegreen", "shadow"])
+    parser.add_argument("--candidate-weight", type=float, default=1.0)
     parser.add_argument("--import-staging-config", type=str, default="staging-config.json")
     parser.add_argument("--import-prod-config", type=str, default="prod-config.json")
     parser.add_argument("--export-staging-config", type=str, default="staging-config-export.json")
@@ -179,7 +226,9 @@ if __name__ == "__main__":
     logging.basicConfig(format=log_format, level=args.log_level)
 
     # Get the latest approved package
+    logger.info("Getting latest approved model package.")
     model_package_arn = get_approved_package(args.model_package_group_name)
+    logger.info(f"Latest approved model package ARN: {model_package_arn}")
 
     # Write the staging config
     with open(args.import_staging_config, "r") as f:
@@ -188,7 +237,8 @@ if __name__ == "__main__":
     with open(args.export_staging_config, "w") as f:
         json.dump(staging_config, f, indent=4)
     if (args.export_cfn_params_tags):
-      create_cfn_params_tags_file(staging_config, args.export_staging_params, args.export_staging_tags)
+        create_cfn_params_tags_file(staging_config, args.export_staging_params, args.export_staging_tags)
+    logger.info(f"Exported staging config with deployment strategy: {args.deployment_strategy}")
 
     # Write the prod config for code pipeline
     with open(args.import_prod_config, "r") as f:
@@ -197,4 +247,5 @@ if __name__ == "__main__":
     with open(args.export_prod_config, "w") as f:
         json.dump(prod_config, f, indent=4)
     if (args.export_cfn_params_tags):
-      create_cfn_params_tags_file(prod_config, args.export_prod_params, args.export_prod_tags)
+        create_cfn_params_tags_file(prod_config, args.export_prod_params, args.export_prod_tags)
+    logger.info(f"Exported production config with deployment strategy: {args.deployment_strategy}")
