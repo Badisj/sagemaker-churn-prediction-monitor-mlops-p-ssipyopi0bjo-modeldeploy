@@ -57,6 +57,9 @@ Parameters:
   EndpointName:
     Type: String
     Description: The endpoint name.
+  EndpointConfigName:
+    Type: String
+    Description: The endpoint configuration name.
   DataCaptureUploadPath:
     Type: String
     Description: The s3 path to which the captured data is uploaded.
