@@ -101,7 +101,7 @@ def extend_config(args, model_package_arn, stage_config):
     timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
 
     candidate_model_name = f"Model-{args.sagemaker_project_name}-{stage_name}-{args.deployment_strategy}-{timestamp}"[:63]
-    endpoint_config_name = f"EndpointConfig-{args.sagemaker_project_name}-{stage_name}-{timestamp}"
+    endpoint_config_name = f"EndpointConfig-{args.sagemaker_project_name}-{stage_name}-{timestamp}"[:63]
     endpoint_name = f"Endpoint-{args.sagemaker_project_name}-{stage_name}"
 
     # Get previous deployed model if exists
