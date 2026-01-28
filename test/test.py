@@ -62,7 +62,7 @@ if __name__ == "__main__":
 
     # Get the endpoint name from sagemaker project name
     endpoint_name = "{}".format(
-        config["EndpointName"]
+        config["Parameters"]["EndpointName"]
     )
     results = test_endpoint(endpoint_name)
 
