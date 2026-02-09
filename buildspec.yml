@@ -53,7 +53,6 @@ phases:
           --export-staging-config $EXPORT_TEMPLATE_STAGING_CONFIG \
           --export-prod-config $EXPORT_TEMPLATE_PROD_CONFIG
           
-
       # Package the infrastucture as code defined in endpoint-config-template.yml by using AWS CloudFormation.
       # Note that the Environment Variables like ARTIFACT_BUCKET, SAGEMAKER_PROJECT_NAME etc,. used below are expected to be setup by the
       # CodeBuild resrouce in the infra pipeline (in the ServiceCatalog product)
